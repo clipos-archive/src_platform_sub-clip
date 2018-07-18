@@ -1,0 +1,194 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: compile program using an automatically spawned Docker Clip SDK 
+# Usage: see clip-docker-compile -h
+
+source default-env
+
+PROG_NAME="$(basename -- $0)" 
+
+set -e -u
+
+DOCKER_OPTS=""
+BUILD_OPTS=""
+BATCH=""
+
+function SudoV() {
+	while [ -e $SLOCK ]; do
+		sudo -v
+		sleep 2
+	done
+}
+
+function usage() {
+	echo "$PROG_NAME [-h] [-b <file>] [-s] [-d <destination>] [-l <logs>] [-D <defines>] <profile> <specfile> <atom>"
+  echo " -b batch mode: pass CSV file with \"species,atom\" to be compiled"
+  echo " -d destination directory for build output"
+	echo " -D list of defines to be passed for the build"
+	echo " -h print this help message"
+	echo " -l output directory for the logs"
+  echo " -s drop a shell instead of invoking compilation script (can be useful for debugging a package)"
+  echo " <profile> name of the Docker profile in the sub-clip configuration"
+	echo " <specfile> the specfile to use without the extension (usually clip or rm)"
+	echo " <atom> the atom to build"
+}
+
+EXTRA_SPEC_DEFINES=
+
+while getopts "b:d:D:hl:s" optchar ; do
+	case "${optchar}" in
+    b)
+      BATCH=$(< $OPTARG)
+      ;;
+		d)
+			DEST_DIR=${OPTARG}
+			;;
+		D)
+			EXTRA_SPEC_DEFINES=${OPTARG}
+			;;
+		h)
+			  usage
+        exit 0
+			  ;;
+		l)
+			  LOG_DIR=${OPTARG}
+			  ;;
+    s)
+        BUILD_OPTS="-s" # ask build.sh to drop a shell
+        DOCKER_OPTS="-i -t"
+        ;;
+		*)
+      echo "Error: unknown option ${OPTARG}"
+			usage
+      exit 1
+			;;
+	esac
+done
+shift $((${OPTIND} - 1))
+
+if [[ $# -lt 3 && ( $# -lt 2 && -z $BATCH ) ]]; then
+	usage
+  exit 1
+fi
+
+PROFILE="${1}"
+if [ -z "$BATCH" ]; then 
+  SPECIES="${2}"
+  ATOM="${3}"
+fi
+
+# ZSH specific
+DEST_DIR=${DEST_DIR:-${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_STAGING")}}
+LOG_DIR=${LOG_DIR:-${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_LOGS")}}
+IMAGE=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_IMAGE")}
+INT_BRANCH=${CLIP_SDK["${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_BRANCH"):-${CLIP_INT_DEFAULT_BRANCH}}"]}
+SPEC_DEFINES=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_DEFINES")}
+SPEC_DEFINES=${EXTRA_SPEC_DEFINES}${EXTRA_SPEC_DEFINES:+${SPEC_DEFINES:+,}}${SPEC_DEFINES}
+
+CONFIG_ROOT="${_CLIP_ROOT}/share/clip/docker-config"
+mkdir -p ${CONFIG_ROOT} ${LOG_DIR} ${DEST_DIR}
+
+BUILDER="$(git config user.name) <$(git config user.email)>"
+
+
+function build_package() {
+  pkg=${1}
+  species=${pkg%%,*}
+  atom=${pkg##*,}
+
+  NAME=$(echo -e "${species}.${atom}" | tr "/+:=*" "_p_es" | sed "s/ //g")
+
+  sudo docker run --rm $=DOCKER_OPTS --tmpfs /tmp:rw,exec,size=8G,mode=1777 \
+       -e CLIP_BUILDER="$BUILDER" \
+   	   -e CLIP_MAKEOPTS="-j$(($(nproc)+1))" \
+   	   -e CLIP_ARCH="x86" \
+   	   -e CLIP_CHOST="i686-pc-linux-gnu" \
+   	   -e CLIP_SPEC_DEFINES="${SPEC_DEFINES}" \
+   	   -e MAKEOPTS="-j$(($(nproc)+1))" \
+   	   -e CHOST="i686-pc-linux-gnu" \
+       -e PORTAGE_TMPDIR="/tmp" \
+       -v ${CONFIG_ROOT}:/config:ro \
+       -v ${CLIP_INT_PREFIX}${INT_BRANCH}:/opt/clip-int:ro \
+       -v ${LOG_DIR}:/log \
+       -v ${_CLIP_ROOT}/share/clip/scripts/build-program.sh:/build.sh:ro \
+       -v ${DEST_DIR}:/opt/build \
+       --name=$NAME \
+       ${IMAGE} \
+       /build.sh $=BUILD_OPTS "${species}" "${atom}"
+
+  rv=$?
+	if [ $rv -ne 0 ]; then
+      # XXX this is currently buggy and is not exported outside of the parallel
+      # environment
+		  echo "[FAIL] Building ${atom} using ${species} species failed" >&2
+  fi
+  return $rv
+}
+
+if [ -z "$BATCH" ]; then
+  BATCH="${SPECIES},${ATOM}"
+  PAR_OPT="--tty"
+else
+  PAR_OPT="--bar"
+fi
+
+function cleanup() {
+	trap - QUIT INT TERM EXIT HUP
+	if [ -e "${SLOCK}" ]; then
+		  rm -rf -- "${SLOCK}"
+	fi
+}
+
+if sudo -v ; then
+		SLOCK=$(mktemp)
+		SudoV &
+
+    trap cleanup QUIT INT TERM EXIT HUP
+fi
+
+logfile="$LOG_DIR/parallel-job-$(date "+%Y-%m-%d-%H:%M").log"
+
+set +u +e
+env_parallel --joblog ${logfile} -k -j 100% \
+             --env DOCKER_OPTS \
+             --env CLIP_INT_PREFIX \
+             --env INT_BRANCH \
+             --env BUILDER \
+             --env SPEC_DEFINES \
+             --env CONFIG_ROOT \
+             --env LOG_DIR \
+             --env _CLIP_ROOT \
+             --env DEST_DIR \
+             --env IMAGE \
+             --env BUILD_OPTS \
+             --env build_package \
+             $=PAR_OPT \
+             "build_package {}" ::: ${BATCH}
+set -e -u
+
+IFS=$'\n' failed_pkgs=($(awk 'NR>1 && $7 != "0" { print $10 }' $logfile))
+
+rv=${#failed_pkgs}
+
+if [ $rv -ne 0 ]; then
+	  echo -e "\e[1mThese packages failed to build :\e[0m"
+	  for pkg in ${failed_pkgs[@]}; do
+		  echo -e "	\e[0;1;34m${pkg%%,*}	\e[0;1;39m${pkg##*,}"
+	  done
+fi
+
+sudo chown -R $UID $DEST_DIR
+
+cleanup
+
+echo "Compile job is finish. See log at $logfile"
+
+# sanitize for the shell
+if [ $rv -lt 255 ]; then
+    rv=${#failed_pkgs[@]}
+else
+  rv=255
+fi
+
+exit $rv

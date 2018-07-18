@@ -1,0 +1,6 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: shortcut to in SDK clip-bump
+
+clip ssh clip-bump

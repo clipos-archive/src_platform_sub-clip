@@ -1,0 +1,27 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-env
+# Summary: display sub-clip environment variables
+
+CONFIG="$HOME/.sub-clip.json"
+echo "Reading $CONFIG"
+source <( python $(dirname $0)/cffile-to-bash.py "$CONFIG")
+
+echo "[CLIP_INT_PREFIX] clip-int prefix is : ${CLIP_INT_PREFIX}"
+
+if [ ${#CLIP_SDK[@]} -eq 0 ]; then
+    echo '$CLIP_SDK is empty (should be an associative array)'
+else
+    for k in "${!CLIP_SDK[@]}"; do
+        echo "SDK $k is located in $CLIP_INT_PREFIX/${CLIP_SDK[$k]}"
+    done
+fi
+
+if [ ${#CLIP_LXC[@]} -eq 0 ]; then
+    echo '$CLIP_LXC is empty (should be an associative array)'
+else
+    for k in "${!CLIP_LXC[@]}"; do
+        echo "SDK is accessible on SSH alias $k (LXC container ${CLIP_LXC[$k]})"
+    done
+fi

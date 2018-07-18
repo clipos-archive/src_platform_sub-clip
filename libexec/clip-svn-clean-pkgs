@@ -1,0 +1,10 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-clean-svn-pkgs
+# Summary: clean the binary packages in the SDKs (before upping)
+
+set -e
+
+svn cleanup &&\
+(svn status| grep -E '^\?|^M' | cut -d ' ' -f '2-' | xargs -r rm) && svn up

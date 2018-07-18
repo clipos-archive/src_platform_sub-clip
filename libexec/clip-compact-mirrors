@@ -1,0 +1,9 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-compact-mirrors
+# Summary: Change duplicates files into hard links in the mirror directory (rdfind is needed)
+
+source default-env
+
+sudo rdfind -makehardlinks true -makeresultsfile false $CLIP_MIRRORS_DIR

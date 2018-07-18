@@ -1,0 +1,108 @@
+#!/usr/bin/env perl
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: preprocess an XML configuration file for clip-build.
+# Author: Vincent Strubel <clipos@ssi.gouv.fr>
+
+
+#
+#  Copyright (C) 2006-2009 SGDN/DCSSI
+#  Copyright (C) 2010 ANSSI
+#
+#  All rights reserved.
+#
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+sub usage($);
+sub printID($$);
+
+# options
+my ($g_in_fname, $g_out_fname);
+my $g_verbosity;
+
+# global vars
+my $g_line;
+my ($g_pkg_count, $g_config_count);
+
+my $g_defines = "";
+
+eval {
+	GetOptions (
+		'in=s'		=>	\$g_in_fname,
+		'out=s'		=>	\$g_out_fname,
+		'defs=s'	=>	\$g_defines,
+		'help'		=>	sub {usage(*STDOUT{IO}); exit 0},
+		'verbose+'	=>	\$g_verbosity
+	) or die 1;
+};
+
+if ($@) {
+	usage(*STDERR{IO});
+	die "Wrong options, aborting";
+}
+
+die "Please specify an input file" 
+	if (not $g_in_fname);
+die "Please specify an output file" 
+	if (not $g_out_fname);
+
+my $cppopts = "";
+foreach my $kw (split ',', $g_defines) {
+	$cppopts .= " -D$kw";
+}
+
+open IN, "cpp -P -C -nostdinc -undef -Werror $cppopts $g_in_fname |"
+	or die "Cannot open input $g_in_fname";
+open OUT, ">", "$g_out_fname"
+	or die "Cannot open output $g_out_fname";
+
+MAINLOOP:
+while ($g_line = <IN>) {
+	print OUT $g_line;
+	
+	if (not ($g_line =~ /config>/ or  $g_line =~ /pkg>/)) {
+		next MAINLOOP;
+	}
+
+	if ($g_line =~ /^(\s*)<config>/) {
+		$g_config_count += 1;
+		printID($1, $g_config_count);
+	}
+	if ($g_line =~ /^(\s*)<\/config>/) {
+		$g_pkg_count = 0;
+	}
+	if ($g_line =~ /^(\s*)<pkg>/) {
+		$g_pkg_count += 1;
+		printID($1, $g_pkg_count);
+	}
+}
+
+close IN;
+close OUT;
+
+sub usage($) {
+	my $out = shift;
+	my $progname = $0;
+	$progname =~ s:.*\/::;
+	
+	print $out <<ENDHELP;
+	
+$progname : prepare clip specfiles to be passed to clip-build
+
+	Usage: $progname -i <in_file> -o <out_file> [-d opt1[,opt2=<val>,...]]
+
+ENDHELP
+}
+
+sub printID($$) {
+	my ($tab, $num) = @_;
+
+	if ($num < 10) {
+		$num = "0$num";
+	}
+
+	print OUT "$tab\t<id>$num</id>\n";
+}

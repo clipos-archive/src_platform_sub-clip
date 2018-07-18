@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: edit sub files
+# Summary: modify your sub "script" files
+
+set -e
+set -u
+
+# reasonable choice for a default editor
+if [ -z ${EDITOR+x} ]; then EDITOR="vim"; fi
+
+CONFIG="$HOME/.sub-clip.json"
+
+if ! test -e $CONFIG; then
+    echo "Create default configuration file"
+    cp ${_CLIP_ROOT}/share/clip/default-env.json $CONFIG
+fi
+
+$EDITOR ${CONFIG}
+chmod 600 ${CONFIG}

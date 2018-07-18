@@ -1,0 +1,17 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip mkarchive tagname
+# Summary: make archive of the current directory
+# Help: 'tagname' is the prefix of the directory containing the archive
+# It is prepended to the path of the files within the archive
+
+set -e
+
+if [ "$#" -ne 1 ]; then echo "You must provide a tagname"; exit 1; fi
+
+tagname="$1"
+
+git archive --format tar --prefix "${tagname}"/ HEAD |xz -c > "${tagname}.tar.xz"
+
+echo "archive is ready in ${tagname}.tar.xz"

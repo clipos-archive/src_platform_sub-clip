@@ -1,0 +1,196 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: for real usage, start with -h
+# Summary: make a clip installation or upgrade mirror
+
+source upgrade-common
+
+set -o pipefail
+
+
+usage() {
+	echo "Usage: $(basename -- ${0}) [-h] [-d <profile>] [-s <species>] [-b <branch>] [-v]"
+	echo ""
+	echo "-h		print this message and exits"
+	echo "-s <species>	build for the specified species (e.g rm, gtw, ...)"
+	echo "-b <branch>	build for the specified branch"
+	echo "-d <profile>  use specified clip docker profile"
+	echo "-v		run in verbose mode"
+	echo "-n		run in dry run mode : only prints the mirror structure"
+	exit 1
+}
+
+order_confs() {
+	ordered_conf=( "$(grep -o "cc\|clip-core-conf" <<< ${@} )"
+				   "$(grep -o "ca\|clip-apps-conf" <<< ${@} )"
+				   "$(grep -o "rc\|rm-core-conf" <<< ${@} )"
+				   "$(grep -o "ra\|rm-apps-conf" <<< ${@} )" )
+	echo "${ordered_conf[@]}"
+}
+
+while getopts "hs:b:d:vn" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+			;;
+		s)
+			SPECIES=${OPTARG}
+			;;
+		b)
+			BRANCH=${OPTARG}
+			;;
+		d)
+			DOCKER_PROFILE=${OPTARG}
+			;;
+		v)
+			DEBUG="yes"
+			;;
+		n)
+			DRY="yes"
+			;;
+		*)
+			usage
+			;;
+	esac
+done
+
+init_base_variables
+
+
+case ${(U)SPECIES} in
+	RM)
+		CLIP_CONFS=(
+			"clip|clip-apps-conf"
+			"clip|clip-core-conf"
+			"rm|rm-core-conf"
+		)
+
+		if [ "${WITH_HERMES}" = "yes" ]; then
+			CLIP_CONFS+=(
+				"rm|rm-apps-conf-h"
+				"rm|rm-apps-conf-b"
+			)
+		else
+			CLIP_CONFS+=( "rm|rm-apps-conf" )
+		fi
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_RM
+		debug_print "Building for RM species"
+		;;
+	GTW)
+		CLIP_CONFS=(
+			"clip|clip-core-conf"
+			"clip|clip-apps-conf"
+		)
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_RM
+		debug_print "Building for GTW species"
+		;;
+esac
+
+VCS_PATH=${VCS_PREFIX}${CLIP_SDK["$BRANCH"]}/
+
+conf_files=()
+missing_debs=()
+major_version=""
+declare -A minor_version
+declare -A to_move
+
+for conf in "${CLIP_CONFS[@]}"; do
+	conf_pkg="${conf#*|}"
+	specfile="clip-${(L)SPECIES}/${conf%|*}"
+	conf_file="$(find "${VCS_PATH}${conf%|*}$(get_package_prefix ${specfile} ${conf_pkg})" -name "${conf_pkg}*_${ARCH}.deb"| sort -rV | head -1)"
+	if [ -z "${conf_file}" ]; then echo "could not find conf file for $conf_pkg"; exit 1; fi
+	conf_files+=( "$conf_file" )
+	conf_version=$(basename ${conf_file})
+	conf_version=${conf_version#*_}
+	conf_version=${conf_version%_*}
+	conf_major=${conf_version%-r*}
+	[ -z "$major_version" ] && major_version="$conf_major"
+	[ "$major_version" = "$conf_major" ] || ( echo "Conf packages version mismatch" >&2; exit 1 )
+	conf_abbrev=$(sed -n "s/\([a-z]\)[a-z]\+-\([a-z]\).*/\1\2/p" <<< ${conf_pkg})
+	minor_version[$conf_abbrev]=${conf_version#*-r}
+	conf_name=$(cut -d '-' -f 1-3 <<< $conf_pkg)
+
+	# "+isset" is a trick to get an empty string if no $to_move[$conf_name] is empty
+	if test "${to_move[$conf_name]+isset}"; then
+		to_move[$conf_name]="${to_move[$conf_name]} $conf_file"
+	else
+		to_move[$conf_name]="$conf_file"
+	fi
+
+	ret=0
+	deps="$(get_deb_deps "$conf_file" 'Depends Suggests')" || ret=$?
+	[ $ret -eq 0 ] || (echo "Something went wrong when computing dependencies for $(basename $conf_file)"; exit 1)
+
+	for dep in ${(z)deps}; do
+		ret=0
+		deb_path="${conf%|*}$(get_package_prefix ${specfile} ${dep})/${dep}" || ret=$?
+		[ $ret -eq 0 ]|| echo "could not find ${dep}"
+		if [ -f ${VCS_PATH}${deb_path} ]; then
+			to_move[$conf_name]="${to_move[$conf_name]} ${VCS_PATH}${deb_path}"
+		else
+			missing_debs+=( "${deb_path}" )
+		fi
+	done
+	to_move[$conf_name]="${(pj: :)${(izu)to_move[$conf_name]}}"
+done
+
+dir_name="clip4-${(L)SPECIES}-dpkg-${major_version}"
+
+for i in $(order_confs ${(k)minor_version}); do
+	dir_name="${dir_name}-${i}${minor_version[$i]}"
+done
+
+if [ "${DRY}" = "yes" ]; then
+	last=""
+	echo "$dir_name"
+	for conf in $(order_confs ${(k)to_move}); do
+		if [ "$last" != "${conf%%-*}" ]; then
+			last="${conf%%-*}"
+			echo "+-- $last"
+		fi
+		echo "|   +-- $conf"
+		echo "|   |   +-- dists"
+		echo "|   |   |   +-- $last"
+		echo "|   |   |       +-- main"
+		echo "|   |   |           +-- binary-i386"
+		echo "|   |   |               +-- Packages.gz"
+		echo "|   |   +-- pool"
+		for deb in ${(z)to_move[$conf]}; do
+			echo "|   |   |   +-- $(basename $deb)"
+		done
+	done
+fi
+
+if [ "${#missing_debs}" != "0" ]; then
+	echo "Some packages are missing, unable to build mirror"
+	echo ""
+	echo "Missing packages :"
+	for miss in "${missing_debs[@]}"; do
+		echo " - $miss"
+	done
+	exit 1
+fi
+
+if [ "${DRY}" = "yes" ]; then
+	exit 0
+fi
+
+debug_print "Building mirror $dir_name"
+
+mirror="${CLIP_DPKG_MIRRORS}/${dir_name}"
+
+mkdir -p "$mirror"
+for conf in ${(k)to_move}; do
+	pool="${mirror}/${conf%%-*}/${conf}/pool"
+	mkdir -p "${mirror}/${conf%%-*}/${conf}/dists/${conf%%-*}/main/binary-${ARCH}"
+	mkdir -p "${pool}"
+	for deb in ${(z)to_move[$conf]}; do
+		cp $deb $pool
+	done
+	pushd "$pool/.." > /dev/null
+	apt-ftparchive packages pool | gzip > "dists/${conf%%-*}/main/binary-${ARCH}/Packages.gz"
+	popd > /dev/null
+done
+
+debug_print "Mirror supposedly ready in $mirror"

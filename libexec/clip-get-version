@@ -1,0 +1,40 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: use the command within a valid clip-int directory (or in its subdirectories)
+# Summary: print the version of a "clip-int" directory
+
+source default-env
+
+for k in "${!CLIP_SDK[@]}"; do
+    SDK_PATH="${CLIP_INT_PREFIX}${CLIP_SDK[$k]}"
+    # if there is match, exec the ssh command in the corresponding clip-int directory
+    if [[ "$PWD" ==  "${SDK_PATH}"* ]]; then
+        dir="${SDK_PATH}"
+    fi
+done
+
+if test -z "$dir"; then
+	echo "this command must be called within a clip-int directory"
+	exit 1
+fi
+
+versions=$(find ${dir} -name "*-conf-*.ebuild" -exec basename {} \; | rev | cut -d '.' -f 2- | rev)
+
+declare -A rev
+
+for version in ${versions}; do
+	key=${version%-conf*}
+	tmp=${key%-*}
+	tmp=${tmp::1}
+	key=${key##*-}
+	key=${key::1}
+	key=${tmp}${key}
+	rev[$key]=${version##*r}
+	major=${version%-*}
+	major=${major##*-}
+done
+
+full=$((${rev[cc]}+${rev[ca]}+${rev[rc]}+${rev[ra]}))
+
+echo "${major}-r${full} (cc${rev[cc]}-ca${rev[ca]}-rc${rev[rc]}-ra${rev[ra]})"

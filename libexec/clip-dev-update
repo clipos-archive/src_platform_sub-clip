@@ -1,0 +1,14 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip dev-update
+# Summary: update all known clip-dev projects
+
+source default-env
+
+set -u
+
+for project in $(ls -d ${CLIP_DEV_PREFIX}/*); do
+	echo "Updating project" $(basename ${project})
+	(cd $project && git svn rebase)
+done

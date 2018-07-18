@@ -1,0 +1,71 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-virt-mount-disk [-u] [-d] <vm> <img>
+# Summary: mount a disk image to a working VM using virsh
+# Help: vm is the name of the virtual machine and img is the path to the disk image
+
+set -e
+
+cfg=$(mktemp)
+
+umount=0
+disk_type="<target dev='sdb' bus='usb' removable='on'/>"
+
+print_usage(){
+	echo "usage: $0 [-u] [-d] <vm> <img>"
+	echo " -u: umount disk"
+	echo " -d: disk mode (use virtio instead of USB device type) (this is useful for Clip installer images)"
+	exit 1
+}
+
+while getopts "ud" opt; do
+	case $opt in
+		u)
+			echo "umount flag set"
+			umount=1
+			;;
+		d)
+			echo "disk mode flag set, will use virtio"
+			disk_type="<target dev='vdb' bus='virtio'/>"
+			;;
+		h)
+			print_usage
+			;;
+		\?)
+			echo "invalid option -$OPTARG"
+			print_usage
+			;;
+	esac
+done
+
+shift $((OPTIND-1))
+
+if [ $# -lt 2 ]; then
+	print_usage
+fi
+
+vm=$1
+img=$2
+
+cat >> $cfg <<EOF
+<disk type='file' device='disk'>
+<driver name='qemu' type='raw'/>
+	<source file='${img}'/>
+<backingStore/>
+$disk_type
+<alias name='usb-disk1'/>
+</disk>
+EOF
+
+if [ $umount == 1 ]; then
+	verb="detach"
+else
+	verb="attach"
+fi
+
+echo "Trying to $verb ${img} on VM ${vm}"
+virsh ${verb}-device ${vm} ${cfg}
+
+# cleanup
+if [ -e ${cfg} ]; then rm ${cfg}; fi

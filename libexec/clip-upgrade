@@ -1,0 +1,194 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: Compile needed packages
+# Usage: clip-upgrade [-h] [-s <species>] [-b <branch>] [-v] [-n]
+# Help: Compile needed packages using local copy of the repository to check what to compile
+
+source upgrade-common
+
+set -e
+set -u
+
+SudoV() {
+	while [ -e $SLOCK ]; do
+		sudo -v
+		sleep 2
+	done
+}
+
+usage() {
+	echo "$(basename -- $0) [-h] [-s <species>] [-b <branch> | -d <profile>] [-v] [-n]"
+	echo ""
+	echo "-h		print this message and exits"
+	echo "-s <species>	build for the specified species (e.g rm, gtw, ...)"
+	echo "-b <branch>	build for the specified branch (using LXC)"
+	echo "-d <profile>  build for the specified docker profile"
+	echo "-v		run in verbose mode"
+	echo "-n		dry-run mode : only lists the needed compilations"
+	echo "-f		build all packages including already existent ones"
+	exit 1
+}
+
+function get_gentoo_name() {
+	local deb_pkg_name=${1%%_*}
+	local docker_defines=${(P)$(echo "CLIP_DOCKER_${(U)DOCKER_PROFILE}_DEFINES")}
+	local int_path="${CLIP_INT_PREFIX}${CLIP_SDK["${BRANCH}"]}"
+	local defines="CLIP_ARCH_x86${docker_defines:+,}${docker_defines}"
+	local specpath="${int_path}/specs/${2}.spec.xml"
+	local tmpfile=$(mktemp)
+	clip specpp -i ${specpath}  -o ${tmpfile} -d ${defines}
+	local gentoo_atom=$(clip spec2deb < ${tmpfile})
+	rm ${tmpfile}
+	local gentoo_atom=$(jq -r ".[\"${deb_pkg_name}\"].atom" <<< ${gentoo_atom})
+	if [ -z "${gentoo_atom}" ]; then
+		echo "Unable to find ${deb_pkg_name} in specfile" >&2
+		return
+	fi
+	echo "${gentoo_atom}"
+	return
+}
+
+BUILDALL="no"
+
+while getopts "hs:b:d:vnf" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+			;;
+		s)
+			SPECIES=${OPTARG}
+			;;
+		b)
+			BRANCH=${OPTARG}
+			;;
+		d)
+			DOCKER_PROFILE=${OPTARG}
+			;;
+		v)
+			DEBUG="yes"
+			;;
+		n)
+			DRY="yes"
+			;;
+		f)
+			BUILDALL="yes"
+			;;
+		*)
+			usage
+			;;
+	esac
+done
+
+init_base_variables
+
+case ${(U)SPECIES} in
+	RM)
+		CLIP_CONFS=(
+			"clip,clip-core-conf"
+			"clip,clip-apps-conf"
+			"rm,rm-core-conf"
+			"rm,rm-apps-conf"
+		)
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_RM
+		debug_print "Building for RM species"
+		;;
+	GTW)
+		CLIP_CONFS=(
+			"clip,clip-core-conf"
+			"clip,clip-apps-conf"
+		)
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_GTW
+		debug_print "Building for GTW species"
+		;;
+esac
+
+if [ -z $DOCKER_PROFILE ]; then
+	echo "Building missing packages for $BRANCH for species $SPECIES"
+else
+	echo "Building missing packages for $BRANCH for species $SPECIES using profile ${DOCKER_PROFILE}"
+fi
+VCS_PATH=${VCS_PREFIX}${CLIP_SDK["$BRANCH"]}/
+
+if [ -z $DOCKER_PROFILE ]; then
+	outdir=$(cmd_within mktemp -d)
+else
+	outdir=$(mktemp -d)
+	if sudo -v ; then
+		SLOCK=$(mktemp)
+		SudoV &
+	fi
+fi
+
+to_build=""
+
+for conf in "${CLIP_CONFS[@]}"; do
+	conf_pkg="clip-conf/${conf#*,}"
+	specfile="clip-${(L)SPECIES}/${conf%,*}"
+	debug_print "Building $conf_pkg using $specfile specs"
+	if [ -z $DOCKER_PROFILE ]; then
+		log=$(cmd_within clip-compile $specfile -debs $outdir -pkgn $conf_pkg 2>&1)
+	else
+		log=$(clip docker compile -d $outdir $DOCKER_PROFILE $specfile $conf_pkg 2>&1)
+	fi
+	built_paths=$(echo "${log}" | grep "Built debian package" | cut -f 2- -d '/')
+	if [ -z "$built_paths" ]; then
+    echo -e "\e[01;31mUnable to build $conf_pkg\e[0m"
+		continue;
+	fi
+	built_packages=$(basename -a ${built_paths})
+	for pkg in $built_packages; do
+		if [ ! -f ${VCS_PATH}/${conf%,*}$(get_package_prefix ${specfile} ${pkg})/${pkg} ]; then
+			debug_print "Following package is missing, adding to build list: ${VCS_PATH}/${conf%,*}$(get_package_prefix ${specfile} ${pkg})/${pkg}"
+			to_build="${to_build} ${specfile},${conf_pkg}"
+		fi
+		if [ -z $DOCKER_PROFILE ]; then
+			deps="$(get_sdk_deb_deps ${outdir}/${pkg} 'Depends Suggests')"
+		else
+			deps="$(get_deb_deps "${outdir}/${conf%,*}/${pkg}" "Depends Suggests")"
+		fi
+		for dep in ${(zf)deps}; do
+			if [ \( ! -f ${VCS_PATH}/${conf%,*}$(get_package_prefix ${specfile} ${dep})/${dep} \) -o x"${BUILDALL}" = x"yes" ]; then
+				dep_atom=$(get_gentoo_name ${dep} ${specfile})
+				debug_print "Following dep is missing, adding to build list: ${VCS_PATH}/${conf%,*}$(get_package_prefix ${specfile} ${dep})/${dep}"
+				to_build="${to_build} ${specfile},${dep_atom}"
+			fi
+		done
+	done
+done
+
+if [ -z $DOCKER_PROFILE ]; then
+	cmd_within rm -rf "${outdir}"
+else
+	sudo rm -rf "${outdir}"
+fi
+
+to_build=( $(echo ${to_build} | tr ' ' '\n'| sort -u) )
+
+if [ "$DRY" = "yes" ]; then
+	debug_print "Running in dry-run mode"
+	echo -e "\e[1mThese packages need to be built :\e[0m"
+	for pkg in ${to_build}; do
+		echo -e "	\e[0;1;34m${pkg%%,*}	\e[0;1;39m${pkg##*,}"
+	done
+	rm ${SLOCK}
+	exit
+fi
+
+debug_print "Building packages for real"
+return_val=0
+failed_pkgs=()
+
+tobuild_f=$(mktemp)
+for pkg in ${to_build}; do
+		echo $pkg  >> ${tobuild_f}
+done
+
+clip docker compile -b ${tobuild_f} ${DOCKER_PROFILE} || failed=1
+rv=$?
+
+rm -f ${tobuild_f}
+
+rm ${SLOCK}
+
+exit $rv

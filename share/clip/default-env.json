@@ -1,0 +1,59 @@
+{
+	"_comment": "default environment for the sub-clip scripts",
+	"sdk": {
+		"_comment": "name of the SDK in the ssh config (this is best if it is the name of SDK branch )<-> name of the SDK directory",
+		"clip4": "clip-int-clip4",
+		"stable-4.4.2":"clip-int-stable-4.4.2",
+		"stable-4.4.1":"clip-int-stable-4.4.1"
+	},
+	"http": {
+		"username": "YOURNAME-dev"
+	},
+	"dpkg": {
+		"sdk": true,
+		"svn": true,
+		"git": false,
+		"prefix": {
+			"rm": "/clip-src/dpkg/rm",
+			"gtw": "/clip-src/dpkg/gtw",
+			"staging": "/clip-src/dpkg/staging"
+		},
+		"mirrors": "~/clip-src/mirrors/"
+	},
+	"build": {
+		"branch": "clip4",
+		"species": "rm"
+	},
+	"int": {
+		"prefix": "~/clip-src/clip-git/",
+		"default-branch": "clip4"
+	},
+	"dev": {
+		"prefix": "~/clip-src/clip-git/clip-dev"
+	},
+	"mirrors": {
+		"dir": "~/mirrors"
+	},
+	"lxc": {
+		"_comment": "list of LXC dedicated to CLIP SDKs (alias: realname)",
+		"sdk-unstable": "unstable",
+		"sdk-4.4.2": "clip-sdk-stable-4.4.2",
+		"sdk-4.4.1": "clip-sdk-stable-4.4.1"
+	},
+	"ssh": {
+		"_comment": "prefix: prefix that completes the list of hosts from clip-sdk",
+		"prefix": "sdk-"
+	},
+	"docker": {
+		"_comment": "list of docker profiles for use with the docker subcommand",
+		"clip4": {
+			"image": "clip-sdk:4.4.2",
+			"branch": "clip4",
+			"logs": "~/clip-src/build-logs/clip4",
+			"staging": "~/clip-src/clip4-dpkg-staging-clip4",
+			"defines": "WITH_HERMES,CLIP_KERNEL_4_4",
+			"dev-sign-key": "~/clip-src/keys/STARK/STARK-DEV Tony.acidpvr",
+			"ctrl-sign-key": "~/clip-src/keys/STARK/STARK-CTRL Tony.acidpvr"
+		}
+	}
+}

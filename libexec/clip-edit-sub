@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: edit sub files
+# Summary: change the sub files easily
+
+if [ -z ${EDITOR+x} ]; then EDITOR="vim"; fi
+
+$EDITOR $(dirname  $0)
+chmod +x $(dirname  $0)/clip-*

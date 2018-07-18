@@ -1,0 +1,168 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: turn a mirror into a make believe update (bump all systems conf files)
+# Usage: clip-bump-mirror <docker-profile> <path>
+# 
+# Bump clip-core-conf, clip-apps-conf, rm-core-conf and rm-apps-conf in a mirror 
+# Docker profile is required for signing the new package
+
+set -e
+set -u
+
+usage() {
+        echo "usage: $0 <docker-profile> <path-to-mirror>"
+        echo " docker-profile: name of the docker profile (for signing the new packages)"
+        echo " path-to-mirror: path to a valid Clip mirror"
+}
+
+if [ $# -lt 2 ]; then
+   usage
+   exit 1
+fi
+
+DOCKER_PROFILE=$1
+MPATH=$2
+
+CC=$MPATH/clip/clip-core-conf/dists/clip/main/binary-i386/Packages.gz 
+CA=$MPATH/clip/clip-apps-conf/dists/clip/main/binary-i386/Packages.gz 
+RC=$MPATH/rm/rm-core-conf/dists/rm/main/binary-i386/Packages.gz 
+RA=$MPATH/rm/rm-apps-conf/dists/rm/main/binary-i386/Packages.gz 
+
+# variable will be changed automatically
+GATEWAY=no
+
+
+# check that we are indeed in a mirror "root"
+
+if [ ! -f $CC  -o \
+     ! -f $CA ]; then
+    echo $MPATH does not appear to be a valid mirror
+    usage
+    exit 1
+fi
+
+
+# this is a gateway because rm-* is missing
+if [ ! -f $RC -o \
+      ! -f $RA ]; then
+    echo This is a gateway mirror
+    GATEWAY=yes
+fi
+
+
+CCPATH=$(find $MPATH -name clip-core-conf_\*|tail -n 1)
+CAPATH=$(find $MPATH -name clip-apps-conf_\*|tail -n 1)
+if [ -z "$CCPATH" -o -z "$CAPATH" ]; then
+    echo "could not find clip-*-conf package"
+    exit 3
+fi 
+if [[ x"${GATEWAY}" == x"no" ]]; then
+    RCPATH=$(find $MPATH -name rm-core-conf_\*|tail -n 1)
+    RA_H_PATH=$(find $MPATH -name rm-apps-conf-h\*|tail -n 1)
+    RA_B_PATH=$(find $MPATH -name rm-apps-conf-b\*|tail -n 1)
+    if [ -z "$RCPATH" -o -z "$RA_H_PATH" -o -z "$RA_B_PATH" ]; then
+        echo "could not find rm-*-conf package"
+        exit 4
+    fi 
+fi
+
+
+# update the *-conf file
+# returns the new of the new package (delete the former package)
+update_conf() {
+    PKG=$1
+    TMPDIR=$(mktemp -d)
+    pushd $TMPDIR >/dev/null 
+
+    # identify version number
+    # split using "_", match a regexp and split into groups, add one to the last group
+    NEW_PKG=$(echo $PKG | gawk -F "_" 'match($2,/([0-9.]+)-r([[:digit:]]+)/,v) { print $1"_" v[1] "-r" (v[2]+1)  "_"  $3 }')
+    PKG_NAME=$(basename $PKG | gawk -F "_" '{ print $1 }')
+    ORIG_VER=$(echo $PKG| gawk -F "_" 'match($2,/([0-9.]+)-r([[:digit:]]+)/,v) { print v[1] "-r" v[2] }')
+    NEW_VER=$(echo $PKG| gawk -F "_" 'match($2,/([0-9.]+)-r([[:digit:]]+)/,v) { print v[1] "-r" (v[2]+1) }')
+
+
+    # uncompress the .deb
+    ar -x $PKG
+
+    # uncompress the metada 
+    mkdir control
+    tar x -C control -f control.tar.gz
+
+    # modify file (bump version number)
+    sed -i "s/^Source:.*$/Source: ${PKG_NAME}_${NEW_VER}/" control/control
+    sed -i "s/^Version:.*$/Version: $NEW_VER/" control/control
+    if grep -q "^Comment:" control/control; then
+        sed -i "/^Comment:/ s/$/ ($ORIG_VER, clip-bump-mirror to $NEW_VER)/" control/control
+    else
+        echo "Comment: ($ORIG_VER, clip-bump-mirror to $NEW_VER)" >> control/control
+    fi
+
+    # update the postinst script of clip-core (version number in the boot screen)
+    if echo $PKG|grep -q "clip-core"; then
+        CC_ORIG_VER=$(echo $PKG| gawk -F "_" 'match($2,/([0-9.]+)-r([[:digit:]]+)/,v) { print v[1] "-cc" v[2] }')
+        CC_NEW_VER=$(echo $PKG| gawk -F "_" 'match($2,/([0-9.]+)-r([[:digit:]]+)/,v) { print v[1] "-cc" (v[2]+1) }')
+        echo "this is clip-core, patching postinst $CC_ORIG_VER -> $CC_NEW_VER" >&2
+        sed -i "s/$CC_ORIG_VER/$CC_NEW_VER/g" control/postinst
+    fi
+
+    # cleanup
+    pushd control >/dev/null
+    tar cz  -f ../control.tar.gz *
+    popd >&2
+    rm -fr control
+
+    # write new archive (newer version number)
+    # (resign will happen later on)
+    ar -r $NEW_PKG debian-binary control.tar.gz data.tar.*
+
+    echo "New .deb at path $NEW_PKG" >&2
+
+    # TODO: remove old archive
+    rm $PKG
+
+
+    rm -fr ${TMPDIR}
+    popd >&2
+    echo $NEW_PKG
+}
+
+
+# run the update script and retrieve the new path
+CCPATH=$(update_conf $CCPATH)
+CAPATH=$(update_conf $CAPATH)
+if [[ x"${GATEWAY}" == x"no" ]]; then
+    RCPATH=$(update_conf $RCPATH)
+    RA_B_PATH=$(update_conf $RA_B_PATH)
+    RA_H_PATH=$(update_conf $RA_H_PATH)
+fi
+
+# resign packages
+if [[ x"${GATEWAY}" == x"no" ]]; then
+    for pkg in $CCPATH $CAPATH $RCPATH $RA_B_PATH $RA_H_PATH; do
+        clip docker sign $DOCKER_PROFILE $pkg
+    done
+else
+    for pkg in $CCPATH $CAPATH; do
+        clip docker sign $DOCKER_PROFILE $pkg
+    done
+fi
+
+# rebuild Packages{.gz} file
+for distdir in $CC $CA; do
+    pushd $(dirname $distdir)/../../../.. 
+    apt-ftparchive packages pool |gzip >  dists/clip/main/binary-i386/Packages.gz
+    popd
+done
+
+if [[ x"${GATEWAY}" == x"no" ]]; then
+    for distdir in $RC $RA; do
+        pushd $(dirname $distdir)/../../../.. #>/dev/null
+        apt-ftparchive packages pool |gzip >  dists/rm/main/binary-i386/Packages.gz
+        popd
+    done
+fi
+
+exit 0
+..

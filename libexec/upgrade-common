@@ -1,0 +1,105 @@
+#!/bin/env zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Common functions/code for upgrade commands
+
+source default-env
+
+DEBUG=""
+DRY=""
+WITH_HERMES=""
+WITH_EXPERIMENTAL_KERNEL=""
+DOCKER_PROFILE=""
+SPECIES=${CLIP_BUILD_SPECIES:-rm}
+BRANCH=${CLIP_BUILD_BRANCH:-clip4}
+PREFIX_PKGS="${_CLIP_ROOT}/share/clip/prefix_pkgs.json"
+ARCH="x86"
+
+set -e
+type -p jq > /dev/null || (echo "Program jq needs to be installed"; exit 1)
+set +e
+
+if [ ! -f ${PREFIX_PKGS} ]; then
+	echo "File ${PREFIX_PKGS} is missing"
+	exit 1
+fi
+
+cmd_within() {
+	ssh ${SSH_HOST} ${@}
+	return $?
+}
+
+debug_print() {
+	if [ x"$DEBUG" = x"yes" ]; then
+		echo -e " * \e[1m"$@"\e[0m" >&2
+	fi
+}
+
+# this function is called from outside of the SDK
+get_deb_deps() {
+	local deps=$(dpkg -f "$1"  ${(z)2} | cut -d ':' -f 2- | tr "," "\n"| tr "=" "_"| sed -e 's/[ \t()]*//g')
+	ret=$?; [ $ret -eq 0 ] || (echo "could not find $1" > /dev/stderr ; exit 1)
+	local files=""
+	for dep in ${(f)deps}; do
+		files="${files}${dep}_${ARCH}.deb "
+	done
+	echo ${files}
+}
+
+# this function is called within the SDK
+get_sdk_deb_deps() {
+	local deps=$(cmd_within dpkg -f "$1"  "$2" | cut -d ':' -f 2- | tr "," "\n"| tr "=" "_"| sed -e 's/[ \t()]*//g')
+	local files=""
+	for dep in $deps; do
+		files="${files}${dep}_${ARCH}.deb "
+	done
+	echo ${files}
+}
+
+get_package_prefix() {
+	local species=${1%%/*}
+	species=${species##*-}
+	local spec=${1##*/}
+	local pkg=${2%%_*}
+	if test "${WITH_HERMES}" = "yes" -a \
+		"$(jq "[.${species}.${spec}.hermes[]? | inside(\"${pkg}\")] | any" ${PREFIX_PKGS})" = "true" ; then
+			echo "-hermes"
+			return 0
+	elif test "${WITH_EXPERIMENTAL_KERNEL}" = "yes" -a \
+		"$(jq "[.${species}.${spec}.\"experimental-kernel\"[]? | inside(\"${pkg}\")] | any" ${PREFIX_PKGS})" = true ; then
+			echo "-experimental-kernel"
+			return 0
+	else
+		return 0
+	fi
+}
+
+init_base_variables() {
+if [ -z $SPECIES -o -z $BRANCH ]; then
+	usage
+fi
+
+if [ -n "$DOCKER_PROFILE" ]; then
+	BRANCH=${(P)$(echo "CLIP_DOCKER_${(U)DOCKER_PROFILE}_BRANCH"):-${BRANCH}}
+	ARCH="i386"
+	debug_print "Building for ${ARCH}"
+	grep -q -E "WITH_HERMES" <<< ${(P)$(echo "CLIP_DOCKER_${(U)DOCKER_PROFILE}_DEFINES")} && WITH_HERMES="yes"
+	grep -q -E "CLIP_KERNEL_4_4" <<< ${(P)$(echo "CLIP_DOCKER_${(U)DOCKER_PROFILE}_DEFINES")} && WITH_EXPERIMENTAL_KERNEL="yes"
+
+else
+	SSH_HOST=${CLIP_SSH_PREFIX}${BRANCH}
+	ARCH=$(cmd_within grep "^CLIP_ARCH" /etc/clip-build.conf | sed -n 's/.*="\(.*\)"/\1/p')
+	[ ${ARCH} = "x86" ] && ARCH="i386"
+	debug_print "Building for ${ARCH}"
+
+	if cmd_within grep -q -E "'CLIP_SPEC_DEFINES=.*WITH_HERMES'" /etc/clip-build.conf; then
+		WITH_HERMES="yes"
+		debug_print "Building with hermes flag"
+	fi
+
+	if cmd_within grep -q -E "'CLIP_SPEC_DEFINES=.*CLIP_KERNEL_4_4'" /etc/clip-build.conf; then
+		WITH_EXPERIMENTAL_KERNEL="yes"
+		debug_print "Building with experimental kernel flag"
+	fi
+fi
+}

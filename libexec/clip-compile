@@ -1,0 +1,28 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: provide a shortcut to in SDK clip-compile
+
+usage() {
+	echo "$(basename -- $0) [-h] [-g] <specfile> <atom>"
+	echo " -h print this message and exit"
+	echo " -g switch to gateway"
+	echo " <specfile> the specfile to use without the extension (usually clip or rm)"
+	echo " <atom> the atom to build"
+}
+
+if [ "$1" = "-h" ]; then
+	usage
+  exit 0
+elif [ $# -lt 2 ]; then
+	usage
+  exit 1
+fi
+
+if [[ "$1" == "-g" ]]; then
+	clip ssh clip-compile clip-gtw/${2} --depends -pkgn ${3}
+	clip ssh clip-compile clip-gtw/${2} -pkgn ${3}
+else
+	clip ssh clip-compile clip-rm/${1} --depends -pkgn ${2}
+	clip ssh clip-compile clip-rm/${1} -pkgn ${2}
+fi

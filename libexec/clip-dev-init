@@ -1,0 +1,25 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip dev-init
+# Summary: fetch new projects in clip-dev
+
+source default-env
+
+set -u
+
+echo "Fetching project list"
+projects=$(wget --user=${CLIP_HTTP_USERNAME} --ask-password --ca-certificate=$HOME/clip-dev.pem -O - https://clip.ssi.gouv.fr/clip-dev/ | grep href | cut -d '"' -f 2 | cut -d / -f 1)
+
+echo $projects > $CLIP_DEV_PREFIX/.projects
+
+pushd $CLIP_DEV_PREFIX
+for project in $projects; do
+	if [ ! -d "${project}" ]; then
+		git svn clone -t tags -b branches https://clip.ssi.gouv.fr/clip-dev/${project}
+		(cd $project && git checkout -b clip4 origin/clip4)
+	else
+		echo "skipping ${project} (directory already exists)"
+	fi
+done
+popd

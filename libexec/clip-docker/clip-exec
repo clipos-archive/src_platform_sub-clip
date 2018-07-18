@@ -1,0 +1,50 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+#Summary: call a command with a docker SDK, setting the current directory in a coherent fashion (if possible)
+
+source default-env
+
+set -e
+set -u
+
+PROG_NAME="$(basename -- $0)"
+
+function usage() {
+	echo "${PROG_NAME} [-h] [-r] [-d|-c] <profile> <package>"
+  echo " <profile> name of the Docker profile in the sub-clip configuration"
+  echo " <program> program to execute"
+}
+
+if [ $# -lt 2 ]; then
+	usage
+  exit 1
+fi
+
+PROFILE="${1}"
+shift 
+
+# ZSH specific
+IMAGE=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_IMAGE")}
+DEST_DIR=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_STAGING")}
+CLIP_INT_PATH=${CLIP_INT_PREFIX}${CLIP_SDK["${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_BRANCH")}"]}
+INT_BRANCH="${CLIP_SDK["${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_BRANCH"):-${CLIP_INT_DEFAULT_BRANCH}}"]}"
+SPEC_DEFINES=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_DEFINES")}
+
+dir=$(echo -n $PWD| sed "s|${CLIP_INT_PATH}||")
+BUILDER="$(git config user.name) <$(git config user.email)>"
+
+sudo docker run  -i --tty --rm \
+     -v ${CLIP_INT_PREFIX}${INT_BRANCH}:/opt/clip-int \
+     -e CLIP_BUILDER="$BUILDER" \
+	   -e CLIP_MAKEOPTS="-j$(($(nproc)+1))" \
+	   -e CLIP_ARCH="x86" \
+	   -e CLIP_CHOST="i686-pc-linux-gnu" \
+	   -e CLIP_SPEC_DEFINES="${SPEC_DEFINES}" \
+	   -e PYTHONPATH="/usr/lib/portage/pym" \
+	   -e MAKEOPTS="-j$(($(nproc)+1))" \
+	   -e CHOST="i686-pc-linux-gnu" \
+     -v ${_CLIP_ROOT}/share/clip/docker-config:/config:ro \
+     -v ${_CLIP_ROOT}/share/clip/scripts/exec-program.sh:/exec.sh:ro \
+     -v $DEST_DIR:/opt/build \
+     ${IMAGE} /bin/bash -c "pushd /opt/clip-int/${dir} >/dev/null; /exec.sh $*"

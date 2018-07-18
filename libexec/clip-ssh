@@ -1,0 +1,38 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-ssh [command]
+# Summary: when started from a working clip-int directory, it ssh in the corresponding directory in the SDK and optionally execute the command
+# Help: command is an optional argument. This is the commad that needs to be executed.
+
+source default-env
+
+set -u
+
+# determine current SDK directory
+for k in "${!CLIP_SDK[@]}"; do
+    SDK_PATH="${CLIP_INT_PREFIX}${CLIP_SDK[$k]}"
+    # if there is match, exec the ssh command in the corresponding clip-int directory
+    if [[ "$PWD" ==  "${SDK_PATH}"* ]]; then
+        dir=$(echo -n $PWD| sed "s|${SDK_PATH}||")
+
+        # check if we can connect to the SSH server
+        ssh "${CLIP_SSH_PREFIX}${k}" true; ret=$?
+        [[ $ret == 0 ]] || (echo "!! Unable to connect to ${CLIP_SSH_PREFIX}${k}" && exit $ret)
+
+        if [[ $# == 0 ]]; then
+            exec ssh -q -t "${CLIP_SSH_PREFIX}${k}" "cd /opt/clip-int/${dir} && exec \$SHELL -l"
+        else
+            exec ssh -q -t "${CLIP_SSH_PREFIX}${k}" "cd /opt/clip-int/${dir} && exec $*"
+        fi
+        echo "this is a valid SDK"
+    fi
+done
+
+# no match, exit
+echo "this command must be called within a clip-int directory"
+
+exit 1
+
+
+

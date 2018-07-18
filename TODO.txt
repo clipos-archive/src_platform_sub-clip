@@ -1,0 +1,10 @@
+clip-prunepkgs:
+- entre les deux paquets suivants: re2_0.2016.05.01-r1_i386.deb et
+  re2_0p20130115-r1_i386.deb, prunepkgs choisit toujours
+  re2_0p20130115-r1_i386.deb qui est pourtant ici le plus ancien
+  Il semblerait pas plus efficace d'analyser le .deb et de comparer les build dates.
+
+clip-upgrade:
+- depuis le passage de upkeep-clip.sh, la logique qui permettait de faire le
+  lien entre le nom du .deb et le nom gentoo a disparu, si un paquet n'existe
+  pas dans une version précédente, le script ne le construira pas

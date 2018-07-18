@@ -1,0 +1,290 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: Sign and move packaging from staging area to VCS dir
+# Help: Warning: This script will discard any uncomited changes in your VCS directory
+
+source upgrade-common
+
+set -e -u
+
+KEEP="" # do not erase files in the directory
+
+SudoV() {
+	  while [ -e $SLOCK ]; do
+		    sudo -v
+		    sleep 2
+	  done
+}
+
+if [ ${CLIP_DPKG_SVN} -eq 0 -a ${CLIP_DPKG_GIT} -eq 0 ]; then
+	echo "No VCS variable set, exiting (please set CLIP_DPKG_SVN and CLIP_DPKG_GIT)"
+	exit 1
+fi
+
+if [ ${CLIP_DPKG_SVN} -eq 1 -a ${CLIP_DPKG_GIT} -eq 1 ]; then
+	echo "Cannot use git and SVN at the same time, exiting (set CLIP_DPKG_SVN or CLIP_DPKG_GIT to 0)"
+	exit 1
+fi
+
+if [ ${CLIP_DPKG_SVN} -eq 1 ]; then
+vcs_clean() {
+	svn revert -R .
+	svn status|grep "^\?"|awk '{print $2}' |xargs rm -f
+}
+vcs_pull() {
+	svn up
+}
+vcs_add() {
+	svn add $@
+}
+vcs_rm() {
+	svn rm --force $@
+}
+fi
+
+if [ ${CLIP_DPKG_GIT} -eq 1 ]; then
+vcs_clean() {
+	git checkout -- .
+	git clean -f .
+}
+vcs_pull() {
+	git svn rebase
+}
+vcs_add() {
+	git add $@
+}
+vcs_rm() {
+	git rm $@
+}
+fi
+
+
+usage() {
+	echo "$(basename -- $0) [-h] [-s <species>] [-b <branch>] [-d <profile> ] [-v] [-n] [-f]"
+	echo ""
+	echo "-h		print this message and exits"
+	echo "-s <species>	build for the specified species (e.g rm, gtw, ...)"
+	echo "-b <branch>	build for the specified branch"
+	echo "-d <profile>	use specified clip-docker profile for package signing"
+	echo "-k		keep existing uncommited changes"
+	echo "-v		run in verbose mode"
+	echo "-n		dry-run mode : only lists the needed file moves/signature"
+#	echo "-f		full mode : check for signature in VCS directories as well"
+	exit 1
+}
+
+while getopts "hs:d:b:vnfk" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+			;;
+		s)
+			SPECIES=${OPTARG}
+			;;
+		b)
+			BRANCH=${OPTARG}
+			;;
+		k)
+			KEEP="yes"
+			;;
+		v)
+			DEBUG="yes"
+			;;
+		n)
+			DRY="yes"
+			;;
+		d)
+			DOCKER_PROFILE=${OPTARG}
+			;;
+#		f)
+#			FULL="yes"
+#			;;
+		*)
+			usage
+			;;
+	esac
+done
+
+init_base_variables
+
+if [ -z ${DOCKER_PROFILE} ]; then
+	STAGING_WITHIN_PREFIX=$(cmd_within grep "^DEBS_BASE" /etc/clip-build.conf | sed -n 's/.*="\(.*\)"/\1/p')
+else
+	if sudo -v; then
+		SLOCK=$(mktemp)
+		SudoV &
+	fi
+fi
+
+case ${(U)SPECIES} in
+	RM)
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_RM
+		STAGING_PREFIX=$CLIP_DPKG_PREFIX_STAGING
+		STAGING_SUBDIRS=( "clip" "rm" )
+		VCS_SUBDIRS=( "clip" "rm" )
+		debug_print "Building for RM species"
+		;;
+	GTW)
+		VCS_PREFIX=$CLIP_DPKG_PREFIX_GTW
+		STAGING_PREFIX=$CLIP_DPKG_PREFIX_STAGING
+		STAGING_SUBDIRS=( "gtw" )
+		VCS_SUBDIRS=( "clip" )
+		debug_print "Building for GTW species"
+		;;
+esac
+
+VCSPATH="${VCS_PREFIX}${CLIP_SDK["$BRANCH"]}/"
+
+unsigned_pkgs=()
+to_move=()
+
+if [ "${DRY}" != "yes" ]; then
+	pushd ${VCSPATH} > /dev/null
+	debug_print "Pulling last changes from VCS"
+
+
+	if [ "${KEEP}" != "yes" ]; then
+		echo "!!! Warning: uncommited changes will be lost !!!"
+		echo "Note: if you don't want this behavior, use the -k (keep) option."
+		echo "Press enter to continue (or hit Ctrl+c) "
+		read
+		vcs_clean
+	fi
+	vcs_pull
+	popd > /dev/null
+fi
+
+debug_print "Checking for unsigned packages in staging directory"
+for dir in ${STAGING_SUBDIRS}; do
+	pushd ${STAGING_PREFIX}${CLIP_SDK["${BRANCH}"]}/${dir} > /dev/null
+	if [ ! -z "$(ls)" ]; then
+		unsigned_pkgs+=( ${(z)$(clip checksign -a | sed "s/^/${dir}\//" )} )
+	fi
+	popd > /dev/null
+done
+
+#if [ "${FULL}" = "yes" ]; then
+#	debug_print "Checking for unsigned packages in vcs directory"
+#	for dir in $( find -L "${VCSPATH}" -maxdepth 1 -mindepth 1 -type d -not -path '*/\.*' -exec realpath {} + | sort -u ); do
+#		pushd $dir > /dev/null
+#		unsigned_pkgs_vcs="${unsigned_pkgs_vcs} $(clip checksign -a | sed "s/^/$(basename $dir)\//" )"
+#	done
+#fi
+if [ 0 -ne ${#unsigned_pkgs} ]; then
+if [ "${DRY}" = "yes" ]; then
+	echo "These staging packages need to be signed :"
+	for pkg in ${unsigned_pkgs}; do
+		echo "	${pkg}"
+	done
+else
+	debug_print "Signing packages"
+	failed=()
+  set +e +u
+	if [ -z ${DOCKER_PROFILE} ]; then
+		env_parallel ${jarg} --bar --env debug_print --env cmd_within \
+			--env DOCKER_PROFILE  --env clip --env _sub_clip_wrapper \
+			"cmd_within clip-sign -a ${STAGING_WITHIN_PREFIX}/{}" ::: ${unsigned_pkgs}
+	else
+		env_parallel ${jarg} --bar --env debug_print --env cmd_within \
+			--env DOCKER_PROFILE  --env clip --env _sub_clip_wrapper \
+			"clip docker sign ${DOCKER_PROFILE} ${STAGING_PREFIX}${CLIP_SDK["${BRANCH}"]}/{} >/dev/null 2>&1" ::: ${unsigned_pkgs}
+	fi
+	if [ ${#failed} -ne 0 ]; then
+		echo -e "\e[1mThese packages can't be signed :\e[0m"
+		for pkg in ${failed[@]}; do
+			echo "	$pkg"
+		done
+	fi
+  set -e -u
+fi
+fi
+#if [ "${FULL}" = "yes" ]; then
+#	echo "These vcs packages need to be signed :"
+#	for pkg in ${unsigned_pkgs_vcs}; do
+#		echo "	${pkg}"
+#	done
+#fi
+
+
+debug_print "Checking for packages to move from staging directory"
+for i in $(seq $(( ${#STAGING_SUBDIRS} ))); do
+	dir=${STAGING_SUBDIRS[$i]}
+	pushd ${STAGING_PREFIX}${CLIP_SDK["${BRANCH}"]}/${dir} > /dev/null
+	if [ ! -z "$(ls)" ]; then
+		for pkg in *.deb; do
+			outdir="${VCS_SUBDIRS[$i]}$(get_package_prefix "clip-${(L)SPECIES}/${VCS_SUBDIRS[$i]}" "$pkg")"
+			if [ ! -f "${VCSPATH}${outdir}/${pkg}" ]; then
+				to_move+=( "${PWD}/${pkg}|${VCSPATH}${outdir}/${pkg}" )
+			else
+				debug_print "${pkg} is already present in ${outdir}, skipping"
+			fi
+		done
+	fi
+	popd > /dev/null
+done
+
+if [ "${DRY}" = "yes" ]; then
+	if [ ${#to_move} -ne 0 ]; then
+		echo "These packages need to be moved :"
+		for pkg in ${to_move}; do
+			echo "	$( basename ${pkg%%|*} ) -> $( sed 's/\/.*\/\(.*\/.*\)/\1/' <<< ${pkg##*|})"
+		done
+	fi
+else
+	debug_print "Moving packages"
+	failed=()
+	pushd "$VCSPATH" > /dev/null
+	if [ ${#to_move[@]} -ne 0 ]; then
+		for pkg in "${to_move[@]}"; do
+			fail=0
+			mv "${pkg%%|*}" "${pkg##*|}" || fail=1
+			vcs_add ${pkg##*|} || fail=1
+			[ $fail -eq 0 ] || failed+=( "${pkg%%|*}" )
+		done
+		popd > /dev/null
+		if [ ${#failed[@]} -ne 0 ]; then
+			echo -e "\e[1mThese packages can't be moved :\e[0m"
+			for pkg in ${failed[@]}; do
+				echo "	$pkg"
+			done
+		fi
+	fi
+fi
+
+debug_print "Pruning old packages"
+
+### Populate VCS_SUBDIRS with the optional suffixed directories
+additional_subdirs=()
+
+if [ "$WITH_HERMES" = "yes" ]; then
+	additional_subdirs+=( ${VCS_SUBDIRS[@]/%/-hermes} )
+fi
+
+if [ "$WITH_EXPERIMENTAL_KERNEL" = "yes" ]; then
+	additional_subdirs+=( ${VCS_SUBDIRS[@]/%/-experimental-kernel} )
+fi
+
+VCS_SUBDIRS+=( ${additional_subdirs[@]} )
+
+### Get a list of pkgs to prune
+to_prune=()
+for dir in ${VCS_SUBDIRS}; do
+	[ -e ${VCSPATH}${dir} ] || continue
+	pushd "${VCSPATH}${dir}" > /dev/null
+	to_prune+=( ${(z)$(clip prunepkgs -p | sed -n "s/.*: \(.*\.deb\)\./${dir}\/\1/p")} )
+	popd > /dev/null
+done
+
+echo -e "\e[1mThese packages are obsolete and will be deleted :\e[0m"
+pushd "$VCSPATH" > /dev/null
+for pkg in ${to_prune}; do
+if [ "${DRY}" = "yes" ]; then
+  # XXX: how come we go in here through a dry run?
+  # clip prunepkgs won't find much...
+	echo "	$pkg"
+else
+	vcs_rm $pkg
+fi
+done
+popd > /dev/null

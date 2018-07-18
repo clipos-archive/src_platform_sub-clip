@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: repack and optimize git trees in the CWD
+# Summary: run git repack and optimize your git tree away (should be useful on big repositories)
+
+git fsck --full
+git prune
+git repack -a -d --depth=250 --window=250  --window-memory=10G

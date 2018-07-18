@@ -1,0 +1,3 @@
+# Summary: Collection of script for managing Virtual Machines (via libvirt)
+# Help: These commands are mostly wrappers around libvirt, libguestfs and virsh
+

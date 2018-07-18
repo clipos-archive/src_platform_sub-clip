@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-update-svn-pkgs
+# Summary: update the binary packages in the SDKs
+
+source default-env
+
+set -u
+
+if [ $CLIP_DPKG_SDK == "true" ]; then
+	for k in "${!CLIP_SDK[@]}"; do
+		echo "updating $k"
+		if [ $CLIP_DPKG_SVN == "true" ]; then
+			ssh $k -- "(cd /opt/build/svn && svn up)"
+		else
+			ssh $k -- "(cd /opt/build/svn && git svn rebase)"
+		fi
+	done
+else
+	for k in $(ls -d ${CLIP_DPKG_PREFIX_RM}* ${CLIP_DPKG_PREFIX_GTW}*); do
+		echo "updating $k"
+		if [ $CLIP_DPKG_SVN -eq 1 ]; then
+			(cd "$k" && svn up)
+		else
+			(cd "$k" && git svn rebase)
+		fi
+	done
+fi

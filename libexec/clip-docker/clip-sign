@@ -1,0 +1,93 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: sign Clip packages (.deb) using a short lived Docker container
+
+source default-env
+
+set -e
+set -u
+
+PROG_NAME="$(basename -- $0)"
+
+function usage() {
+	echo "${PROG_NAME} [-h] [-r] [-d|-c] <profile> <package>"
+	echo " -r deletes existing signature"
+	echo " -d only adds DEV signature"
+	echo " -c only adds CTRL signature"
+  echo " <profile> name of the Docker profile in the sub-clip configuration"
+  echo " <package> path to the .deb package that will be signed"
+}
+
+BOTH="y"
+
+while getopts "hdcr" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+      exit 0
+			;;
+		d)
+			DEV="y"
+			BOTH=""
+			;;
+		c)
+			CTRL="y"
+			BOTH=""
+			;;
+		r)
+			REPLACE="y"
+			;;
+		*)
+			usage
+      exit 1
+			;;
+	esac
+done
+shift $((${OPTIND} - 1))
+
+if [ $# -lt 2 ]; then
+	usage
+  exit 1
+fi
+
+PROFILE="${1}"
+PACKAGE="${2}"
+
+# ZSH specific
+IMAGE=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_IMAGE")}
+DEV_KEY=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_DEV_SIGN_KEY")}
+DEV_PWD="${DEV_KEY}.txt"
+DEV_CERT="${DEV_KEY/acidpvr/acidppr}"
+
+if [ -z ${DEV_KEY} ] && [ -n $BOTH -o -n $DEV]; then
+	echo "No dev signature key provided." >&2
+	exit 1
+fi
+
+CTRL_KEY=${(P)$(echo "CLIP_DOCKER_${(U)PROFILE}_CTRL_SIGN_KEY")}
+CTRL_PWD="${CTRL_KEY}.txt"
+CTRL_CERT="${CTRL_KEY/acidpvr/acidppr}"
+
+if [ -z ${CTRL_KEY} ] && [ -n $BOTH -o -n $CTRL]; then
+	echo "No control signature key provided." >&2
+	exit 1
+fi
+
+CONFIG_ROOT="${_CLIP_ROOT}/share/clip/docker-config"
+mkdir -p ${CONFIG_ROOT} 
+
+BUILDER="$(git config user.name) <$(git config user.email)>"
+
+NAME=$(echo -e "sign_$(basename ${PACKAGE})" | tr "/" "_" | sed "s/ //g")
+
+echo "Signing ${PACKAGE:A}"
+sudo docker run  --rm \
+     -e CLIP_BUILDER="$BUILDER" \
+     -v $CONFIG_ROOT:/config:ro \
+     -v ${_CLIP_ROOT}/share/clip/scripts/sign-program.sh:/sign-program.sh:ro \
+     -v ${DEV_KEY}:/dev.acidpvr:ro -v ${DEV_PWD}:/dev.acidpvr.txt:ro -v ${DEV_CERT}:/dev.acidppr:ro \
+     -v ${CTRL_KEY}:/ctrl.acidpvr:ro -v ${CTRL_PWD}:/ctrl.acidpvr.txt:ro -v ${CTRL_CERT}:/ctrl.acidppr:ro \
+     -v ${PACKAGE:A}:/pkg.deb \
+     --name=$NAME \
+     ${IMAGE} /sign-program.sh ${REPLACE:+"-r"} ${DEV:+"-d"} ${CTRL:+"-c"} ${BOTH:+"-a"}

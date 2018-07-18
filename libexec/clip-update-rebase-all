@@ -1,0 +1,22 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip update-rebase-all
+# Summary: update all clip ressources
+# Help: update all git/svn and switch branches
+
+set -e
+
+source default-env
+
+if [ -z ${CLIP_INT_PREFIX+x} ]; then echo "CLIP_INT_PREFIX needs to be defined"; exit 1;  fi
+
+echo "synchronizing gits, this might take a while"
+
+for k in "${!CLIP_SDK[@]}"; do
+    pushd "$CLIP_GIT_PREFIX/${CLIP_SDK[$k]}"
+        git svn rebase
+        git checkout ${k}
+        git rebase origin/${k}
+    popd
+done

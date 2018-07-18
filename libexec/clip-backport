@@ -1,0 +1,98 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: List backportable commit from a git tree
+
+source default-env
+
+function is_not_conf_commit() {
+	# stduf here removes some "tail: write error: Broken pipe" errors
+	git show "${1}" --name-only --oneline | stdbuf -i0 -o0 -e0 tail -n+2 | grep 'clip-conf' -v --quiet
+	rv=$?
+	return $rv
+}
+
+function format_line() {
+	operation=$(echo ${1} | cut -f 1 )
+	elems=( ${(s:/:)$(echo ${1} | cut -f 2)} )
+	if [ -z "${MACHINE}" ]; then
+		echo -ne "\t"
+	fi
+	if [[ ${elems[1]} =~ '^portage' ]]; then
+		echo -n "${elems[2]}/${elems[3]}"
+	elif [[ ${elems[1]} =~ '^distfiles.*' ]]; then
+		if [[ ${operation} = "A" ]]; then
+			oper="+"
+		elif [[ ${operation} = "D" ]]; then
+			oper="-"
+		fi
+		if [ -n "${MACHINE}" ]; then
+			echo -n "${oper}${elems[2]}"
+		else
+			echo -n "${oper} ${elems[2]}"
+		fi
+	else
+		echo -n ${(j:/:)elems}
+	fi
+}
+
+usage() {
+	echo "clip-backport [-b <branch>] [-r|-m]"
+	echo ""
+	echo " -b <branch> use this branch as destination branch"
+	echo " -r          outputs in raw mode, more details and less readability"
+	echo " -m          outputs in machine mode, one line per commit"
+	exit 1
+}
+
+BRANCH="${CLIP_INT_DEFAULT_BRANCH}"
+
+while getopts "hb:rm" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+			;;
+		b)
+			BRANCH=${OPTARG}
+			;;
+		r)
+			RAW="yes"
+			;;
+		m)
+			MACHINE="yes"
+			;;
+		*)
+			usage
+			;;
+	esac
+done
+
+backportable=$(git cherry "${BRANCH}" 'clip4' | grep -e '^+' | cut -f 2 -d ' ')
+
+for commit in ${(f)backportable}; do
+	if is_not_conf_commit $commit; then
+		commit_title=$(git show "${commit}" --oneline --name-only | head -1)
+		commit_body=$(git show "${commit}" --oneline --name-status -M99 | tail -n+2)
+		if [ -n "${MACHINE}" ]; then
+			echo -n "${commit_title} "
+		else
+			echo "${commit_title}"
+			if echo ${commit_body} | grep 'clip-conf' --quiet; then
+				echo "\tCommit contains clip-conf modifications"
+			fi
+		fi
+		if [ -n "${RAW}" ]; then
+			grep -v 'clip-conf' <<< ${commit_body}
+			continue
+		fi
+		formatted_lines=( )
+		for line in "${(f)$(grep -v 'clip-conf' <<< ${commit_body})}"; do
+			formatted_lines+=( "$(format_line "$line")" )
+		done
+		if [ -n "${MACHINE}" ]; then
+			echo ${${(u)formatted_lines}}
+		else
+			echo ${(F)${(u)formatted_lines}}
+		fi
+	fi
+done

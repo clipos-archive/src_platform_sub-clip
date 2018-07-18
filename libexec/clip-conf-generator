@@ -1,0 +1,168 @@
+#!/bin/zsh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: Generates/Updates clip-conf ebuilds from portage tree
+# Usage: clip-conf-generator [-h] [-b <branch>] [-v] [-n]
+
+source default-env
+
+BRANCH=${CLIP_INT_DEFAULT_BRANCH}
+SUFFIX_WHITELIST=$(cat "${_CLIP_ROOT}/share/clip/suffix_whitelist")
+VERSION_RE="-[0-9]##(.[0-9]##)#[a-z](#c,1)(_(pre|p|beta|alpha|rc)[0-9]#)#(-r[0-9]##)(#c,1)"
+
+function usage(){
+	echo "clip-conf-generator [-h] [-b <branch>] [-v] [-n]"
+	echo ""
+	echo "\t-h\t\t\tdisplay this message and exits"
+	echo "\t-b\t<branch>\tuses <branch> clip-int tree"
+	echo "\t-v\t\t\tprints extra messages"
+	echo "\t-n\t\t\tdon't change anything"
+	exit 1
+}
+
+function yesno_prompt(){
+	read -q "?${1}"
+	local rv=$?
+	echo "" >&2
+	return rv
+}
+
+function choices_prompt(){
+	local PS3="${1}"
+	local list=( ${@[2,-1]} )
+	local choice=""
+	select choice in $list; do
+		break
+	done
+	echo "${choice}"
+}
+
+function process_conf_ebuild() {
+	conffile="${1}"
+	packages=$(grep -Eo '^\s*=(.*)' "${conffile}" | sed -e 's/\s*=\(.*\)/\1/')
+	setopt extended_glob
+
+	for package_string in ${(f)packages}; do
+		category=${package_string%%/*}
+		package=${package_string##*/}
+		package_name=${package%%${~VERSION_RE}}
+		full_package_name=$package_name
+		package_version=${package:${#package_name}}
+		for elem in ${(f)SUFFIX_WHITELIST}; do
+			if [[ $package_name =~ "^${elem/\+/\+}.*" ]]; then
+				package_name=$elem
+			fi
+		done
+		path_search="*${category}/${package_name}/${package_name}${package_version}.ebuild"
+		path_found=$(find -ipath "${path_search}")
+		if [ -z "$path_found" ]; then
+			if [ -n "${VERBOSE}" ]; then
+				echo "Missing $package_string searching for better package"
+			fi
+			paths_found=( $(find -ipath "*${category}/${package_name}/${package_name}*.ebuild") )
+			case ${#paths_found} in
+				1)  new_version=$(basename "${paths_found}" ".ebuild")
+					new_version=${new_version:${#package_name}}
+					if [ -z "${DRY}" ]; then
+						if yesno_prompt "Upgrade ${package_name} from ${package_version:1} to ${new_version:1} [y/N] ? "; then
+							sed -e "s!${package_string}!${category}/${full_package_name}${new_version}!" -i "${conffile}"
+						fi
+					else
+						printf "  %30s %17s -> %17s\n" "${category}/${full_package_name}" "${package_version:1}" "${new_version:1}"
+					fi
+					;;
+				0)
+					paths_found=( $(find -iname "${package_name}*.ebuild") )
+					case ${#paths_found} in
+						1)  new_version=$(basename "${paths_found}" ".ebuild")
+							new_version=${new_version:${#package_name}}
+							new_category=${${(s:/:)paths_found}[-3]}
+							if [ -z "${DRY}" ]; then
+								if yesno_prompt "Replace ${package_string} by ${new_category}/${full_package_name}${new_version} [y/N] ? "; then
+									sed -e "s!${package_string}!${new_category}/${full_package_name}${new_version}!" -i "${conffile}"
+								fi
+							else
+								printf "  %48s => %48s\n" "${package_string}" "${new_category}/${full_package_name}${new_version}"
+							fi
+							;;;
+						0)
+							echo " ${package_string} Not Found in portage tree" >&2
+							;;;
+						*)
+							new_strings=( )
+							for path in ${paths_found}; do
+								new_version=$(basename "${path}" ".ebuild")
+								new_version=${new_version:${#package_name}}
+								new_strings+=( "${${(s:/:)path}[-3]}/${full_package_name}${new_version}" )
+							done
+							echo "Multiple alternatives are available for ${full_package_name} : " >&2
+							if [ -z "${DRY}" ]; then
+								chosen=$(choices_prompt "Choose the wanted alternative : " ${new_strings} )
+								if [ -n "${chosen}" ]; then
+									sed -e "s!${package_string}!${chosen}!" -i "${conffile}"
+								fi
+							else
+								for alternative in ${new_strings}; do
+									echo "\t\t${alternative}"
+								done
+							fi
+							;;;
+						esac
+					;;
+				*)
+					new_packages=( $(basename -s ".ebuild" ${paths_found}) )
+					echo "Multiple versions are available for ${full_package_name} : " >&2
+					if [ -z "${DRY}" ]; then
+						chosen=$(choices_prompt "Choose the wanted version : " ${new_packages} )
+						if [ -n "${chosen}" ]; then
+							sed -e "s!${package_string}!${category}/${full_package_name}${chosen:${#package_name}}!" -i "${conffile}"
+						fi
+					else
+						for package in ${new_packages}; do
+							echo "\t\t${package}"
+						done
+					fi
+					;;
+			esac
+		else
+			if [ -n "${VERBOSE}" ]; then
+				echo "Package ${package_string} found"
+			fi
+		fi
+	done
+
+	unsetopt extended_glob
+}
+
+
+while getopts "hb:vn" optchar ; do
+	case "${optchar}" in
+		h)
+			usage
+			;;
+		b)
+			BRANCH=${OPTARG}
+			;;
+		v)
+			DEBUG="yes"
+			;;
+		n)
+			DRY="yes"
+			;;
+		*)
+			usage
+			;;
+	esac
+done
+
+if [ -z "${CLIP_SDK["${BRANCH}"]}" ]; then
+	usage
+fi
+INT_PATH="${CLIP_INT_PREFIX}${CLIP_SDK["${BRANCH}"]}"
+
+cd $INT_PATH
+for conf_file in ${INT_PATH}/portage-overlay-clip/clip-conf/**/*.ebuild; do
+	echo "--- Process $(basename "$conf_file" ".ebuild") ---"
+	process_conf_ebuild "${conf_file}"
+	echo ""
+done

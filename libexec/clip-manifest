@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Summary: shortcut to ebuild manifest
+# Provide clip completions
+
+if [ "${1}" = "--complete" ]; then
+	find ${2} -mindepth 1 -maxdepth 1 \( -name "*.ebuild" \) -printf '%P\n'
+else
+	clip ssh ebuild ${1} manifest
+fi

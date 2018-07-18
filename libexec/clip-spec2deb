@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-spec2deb
+# Summary: Creates a deb name indexed structure from a preprocessed specfile
+# Help: Takes a preprocessed specfile as stdin and a json with the following
+# structure in stdout
+# {
+#   "package-name": {
+#     "atom"    : "package-category/package-name",
+#     "cflags"  : "flag for compilation",
+#     "env"     : "ENV_VARS",
+#     "features": "package gentoo features",
+#     "ldflags" : "linker flags",
+#     "use"     : "useflags for package",
+#   }, ...
+# }
+
+import xml.etree.ElementTree as ET
+import sys
+import json
+import re
+
+ebreg = re.compile(r'(\S+)-(\d+(?:\.\d+)*[a-zA-Z]?(?:(?:_alpha|_beta|_pre|_rc|_p)\d*)?\*?(?:-r\d+)?)')
+def concatenate_elements(spec, config, pkg, tag, sep):
+	return spec.findtext(tag, "")+sep+config.findtext(tag, "")+sep+pkg.findtext(tag, "")
+
+def parse_env(env_string):
+	return { elem.split('=',1)[0].strip():elem.split('=',1)[1].strip()
+			for elem in env_string.split(',') if elem is not ""}
+
+specTree = ET.parse(sys.stdin)
+
+spec = specTree.getroot()
+
+spec_dict={}
+
+for config in spec.findall("config"):
+	for pkg in config.findall("pkg"):
+		env = parse_env(concatenate_elements(spec,config,pkg,"env",","))
+		ldflags = concatenate_elements(spec,config,pkg,"ldflags"," ")
+		cflags = concatenate_elements(spec,config,pkg,"cflags"," ")
+		features = concatenate_elements(spec,config,pkg,"features"," ").translate(str.maketrans('\n',' ')).split()
+		use = concatenate_elements(spec,config,pkg,"use"," ").translate(str.maketrans('\n',' ')).split()
+		for atom in pkg.findtext("pkgnames").splitlines():
+			try:
+				pkg_name = atom.split('/')[1].split(':')[0].strip()
+				match = ebreg.fullmatch(pkg_name)
+				if match is not None:
+					pkg_name =  match.group(1)
+				pkg_name = pkg_name.lower().translate(str.maketrans('_','-')) + env.get('DEB_NAME_SUFFIX',"")
+				spec_dict[pkg_name]={
+						"atom":atom.strip(),
+						"env":env,
+						"ldflags":ldflags,
+						"cflags":cflags,
+						"use":use,
+						"features":features
+						}
+			except:
+				continue
+
+print(json.dumps(spec_dict, sort_keys=True))
+

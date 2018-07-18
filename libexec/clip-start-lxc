@@ -1,0 +1,13 @@
+#!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright © 2017-2018 ANSSI. All Rights Reserved.
+# Usage: clip-start-lxc
+# Summary: start lxcs stated in conf file
+
+set -e
+source default-env
+
+for lxc in "${CLIP_LXC[@]}"; do
+    echo starting $lxc
+    sudo lxc-start -d -n ${lxc}
+done
